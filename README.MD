@@ -32,6 +32,8 @@ This wrapper will take as input authentication credentials for CxSAST and Cx1 as
 4. connect to CheckmarxOne and import the zip file for you
 
 Note: there are two paths hardcoded, one for the cxsast_exporter.exe and one for the folder that includes the similarityID calculator which is bundled with the export tool. 
+````
     exporterPath := "c:/work/code/cxsast-branch-migration/bin/cxsast_exporter.exe"
     externalFolderPath := "c:/work/code/cxsast-branch-migration/bin"
+````
 You'll want to update that to whatever suits your environment.
