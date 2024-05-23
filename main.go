@@ -12,6 +12,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 	"time"
 
@@ -222,13 +223,15 @@ func main() {
 		},
 	})
 
+	branchCount := make(map[string][]int)
+
 	for _, name := range projectNames {
 		re := regexp.MustCompile("(?i)" + name)
 
 		logger.Infof("Checking projects matching '%v'", name)
+		branchCount[name] = make([]int, 0)
 
-		willSkip := true
-		for _, p := range projects {
+		for index, p := range projects {
 			if re.MatchString(p.Name) {
 				//logger.Infof(" - Project %v", p.String())
 				lastscan, err := sastclient.GetLastScanByID(p.ProjectID)
@@ -239,17 +242,30 @@ func main() {
 					} else if sastclient.CompareVersions(lastscan.ScanState.CxVersion, "9.3.0") < 0 && *FailVersion {
 						logger.Warningf(" x %v Last scan version is too old - %v - should be at least 9.3, project will be excluded", p.String(), lastscan.ScanState.CxVersion)
 					} else {
-						pmap[currentBatch][int(p.ProjectID)] = name
-						logger.Infof(" + %v in scope for group %d", p.String(), currentBatch)
-						willSkip = false
+						logger.Infof(" + %v in scope", p.String())
+						branchCount[name] = append(branchCount[name], index)
 					}
 				} else {
 					logger.Warningf(" x %v Unable to retrieve last successful scan due to error %s, project will be excluded", p.String(), err)
 				}
 			}
 		}
+	}
+	logger.Hooks = make(logrus.LevelHooks, 0)
+	logger.Infof("There are %d projects in scope", len(pmap))
 
-		if !willSkip {
+	sort.Slice(projectNames, func(i, j int) bool { return len(branchCount[projectNames[i]]) > len(branchCount[projectNames[j]]) })
+
+	for _, name := range projectNames {
+		logger.Infof("Group %d - %v with %d branches", currentBatch, name, len(branchCount[name]))
+
+		if len(branchCount[name]) > 0 {
+
+			for _, pindex := range branchCount[name] {
+				pmap[currentBatch][int(projects[pindex].ProjectID)] = name
+
+			}
+
 			currentCount++
 			if currentCount >= *BatchSize {
 				currentCount = 0
@@ -258,8 +274,6 @@ func main() {
 			}
 		}
 	}
-	logger.Hooks = make(logrus.LevelHooks, 0)
-	logger.Infof("There are %d projects in scope", len(pmap))
 
 	if len(pmap) > 0 {
 		for group := range pmap {
