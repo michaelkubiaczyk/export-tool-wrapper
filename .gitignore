@@ -1,0 +1,7 @@
+*.bat
+bin
+bin/**
+*.txt
+migration*
+migration*/**
+*cache.json
