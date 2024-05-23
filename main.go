@@ -25,6 +25,9 @@ import (
 	easy "github.com/t-tomalak/logrus-easy-formatter"
 )
 
+var ScanMaxAge int = 3650
+var statuslogger *logrus.Logger
+
 func main() {
 	logger := logrus.New()
 	logger.SetLevel(logrus.InfoLevel)
@@ -50,6 +53,9 @@ func main() {
 	ProjectName := flag.String("project", "", "Optional: CxSAST project name if parameter 'projects-file' is not used")
 	ProjectsFile := flag.String("projects-file", "", "Optional: Text file containing one project name per line if parameter 'project' is not used")
 	BatchSize := flag.Int("batchsize", 10, "Optional: Number of projects to export/import at a time")
+	ScanMaxAge := flag.Int("maxage", 180, "Optional: Last scan must have run at least MaxAge days ago")
+	FailVersion := flag.Bool("failversion", false, "Optional: Fail if the last scan was with CxSAST version 9.2 or earlier")
+	LogFileName := flag.String("logfile", "log.txt", "Optional: Log file to output migration success/fail status")
 
 	QueryMap := flag.String("querymapping", "bin/mappings-DEV.json", "Required: Path to query mapping file")
 	ApplicationName := flag.String("application", "", "Optional: Name of the application into which the projects should be imported")
@@ -188,59 +194,107 @@ func main() {
 		}
 	}
 
+	logFile, err := os.OpenFile(*LogFileName, os.O_WRONLY|os.O_CREATE|os.O_APPEND, 0600)
+	if err != nil {
+		logger.Fatalf("Failed to open log file %v: %s", *LogFileName, err)
+	}
+	defer logFile.Close()
+	statuslogger = logrus.New()
+	statuslogger.SetLevel(logrus.InfoLevel)
+	statuslogger.SetFormatter(myformatter)
+	statuslogger.SetOutput(logFile)
+
 	currentBatch := 0
 	currentCount := 0
 	pmap[currentBatch] = make(map[int]string)
 
-	if *ApplicationName != "" {
-		app, err := cx1client.GetApplicationByName(*ApplicationName)
-		if err != nil {
-			logger.Fatalf("Failed to get target application %v: %s", *ApplicationName, err)
-		}
+	today := time.Now()
 
-		for _, name := range projectNames {
-			app.AddRule("project.name.in", name)
-
-			if err = cx1client.UpdateApplication(&app); err != nil {
-				logger.Errorf("Failed to add project %v to application %v: %s", name, app.String(), err)
-			}
-		}
-
-	}
+	logger.AddHook(&writer.Hook{ // Send logs to the statuslogger logfile in migration request folder
+		Writer: logFile,
+		LogLevels: []log.Level{
+			log.PanicLevel,
+			log.FatalLevel,
+			log.ErrorLevel,
+			log.WarnLevel,
+			log.InfoLevel,
+			log.DebugLevel,
+		},
+	})
 
 	for _, name := range projectNames {
 		re := regexp.MustCompile("(?i)" + name)
 
+		logger.Infof("Checking projects matching '%v'", name)
+
+		willSkip := true
 		for _, p := range projects {
 			if re.MatchString(p.Name) {
-				logger.Infof("Project in scope for group %d: %v", currentBatch, p.String())
-				pmap[currentBatch][int(p.ProjectID)] = name
+				//logger.Infof(" - Project %v", p.String())
+				lastscan, err := sastclient.GetLastScanByID(p.ProjectID)
+
+				if err == nil {
+					if lastscan.DateAndTime.FinishedOn.Before(today.AddDate(0, 0, -*ScanMaxAge)) {
+						logger.Warningf(" x %v Last scan was over %d days ago: %v", p.String(), *ScanMaxAge, lastscan.DateAndTime.FinishedOn)
+					} else if sastclient.CompareVersions(lastscan.ScanState.CxVersion, "9.3.0") < 0 && *FailVersion {
+						logger.Warningf(" x %v Last scan version is too old - %v - should be at least 9.3, project will be excluded", p.String(), lastscan.ScanState.CxVersion)
+					} else {
+						pmap[currentBatch][int(p.ProjectID)] = name
+						logger.Infof(" + %v in scope for group %d", p.String(), currentBatch)
+						willSkip = false
+					}
+				} else {
+					logger.Warningf(" x %v Unable to retrieve last successful scan due to error %s, project will be excluded", p.String(), err)
+				}
 			}
 		}
 
-		currentCount++
-		if currentCount >= *BatchSize {
-			currentCount = 0
-			currentBatch++
-			pmap[currentBatch] = make(map[int]string)
+		if !willSkip {
+			currentCount++
+			if currentCount >= *BatchSize {
+				currentCount = 0
+				currentBatch++
+				pmap[currentBatch] = make(map[int]string)
+			}
 		}
-
 	}
-
+	logger.Hooks = make(logrus.LevelHooks, 0)
 	logger.Infof("There are %d projects in scope", len(pmap))
+
 	if len(pmap) > 0 {
-		for batch := range pmap {
+		for group := range pmap {
 			migrationId := uuid.New()
 			migrationFolder := fmt.Sprintf("migration-%v", migrationId.String())
-			err = migrationRunner(migrationFolder, *SASTUrl, *SASTUser, *SASTPass, *QueryMap, cx1client, pmap[batch], logger)
+			statuslogger.Infof("Project Group %d of %d (sub-folder: %v):", group+1, len(pmap), migrationFolder)
+
+			err = migrationRunner(migrationFolder, *SASTUrl, *SASTUser, *SASTPass, *QueryMap, cx1client, pmap[group], *ScanMaxAge, logger)
 			if err != nil {
-				logger.Fatalf("Failed group %d migration: %s", batch, err)
+				logger.Errorf("Failed group %d migration: %s", group, err)
 			}
 		}
+	}
+
+	if *ApplicationName != "" {
+		logger.AddHook(&writer.Hook{ // Send logs to the statuslogger logfile in migration request folder
+			Writer: logFile,
+			LogLevels: []log.Level{
+				log.PanicLevel,
+				log.FatalLevel,
+				log.ErrorLevel,
+				log.WarnLevel,
+				log.InfoLevel,
+				log.DebugLevel,
+			},
+		})
+
+		AssignProjectsByName(cx1client, &projectNames, *ApplicationName, logger)
+		AddProjectTags(cx1client, &projectNames, *ApplicationName, logger)
+
+		logger.Hooks = make(logrus.LevelHooks, 0)
 	}
 }
 
-func migrationRunner(migrationId, sasturl, sastuser, sastpass, querymapping string, cx1client *Cx1ClientGo.Cx1Client, projectMapping map[int]string, logger *logrus.Logger) error {
+func migrationRunner(migrationId, sasturl, sastuser, sastpass, querymapping string, cx1client *Cx1ClientGo.Cx1Client, projectMapping map[int]string, maxAge int, logger *logrus.Logger) error {
 	/*
 	   High level steps:
 	   1. create projects and assign them to application
@@ -276,6 +330,7 @@ func migrationRunner(migrationId, sasturl, sastuser, sastpass, querymapping stri
 			log.DebugLevel,
 		},
 	})
+
 	//projectIds := []string{}
 	projectMappingByName := make(map[string][]int)
 
@@ -332,15 +387,20 @@ func migrationRunner(migrationId, sasturl, sastuser, sastpass, querymapping stri
 	// extract triage data from CxSAST
 
 	for batch := range projectBatches {
-		archiveName, encryptionKeyFilename, _, warningMsgs, errorMsgs, err := execCxSastExporter(username, password, cxsast_url, projectBatches[batch], queryMappingFilePath, migrationId)
+		statuslogger.Infof("Batch %d of %d", batch+1, len(projectBatches))
+		for _, pid := range projectBatches[batch] {
+			statuslogger.Infof("Project ID #%d '%v'", pid, projectMapping[pid])
+		}
+
+		archiveName, encryptionKeyFilename, _, warningMsgs, errorMsgs, err := execCxSastExporter(username, password, cxsast_url, projectBatches[batch], queryMappingFilePath, migrationId, maxAge)
 		if err != nil {
 			retryCounter := 1
 			retryDelay := 30
-			for retryCounter < 5 {
+			for retryCounter < 3 {
 				logger.Warningf("Export attempt %d/5 failed with error %v, waiting %d seconds to retry", retryCounter, err, retryDelay)
 
 				time.Sleep(time.Duration(retryDelay) * time.Second)
-				archiveName, encryptionKeyFilename, _, warningMsgs, errorMsgs, err = execCxSastExporter(username, password, cxsast_url, projectBatches[batch], queryMappingFilePath, migrationId)
+				archiveName, encryptionKeyFilename, _, warningMsgs, errorMsgs, err = execCxSastExporter(username, password, cxsast_url, projectBatches[batch], queryMappingFilePath, migrationId, maxAge)
 				if err == nil {
 					break
 				}
@@ -350,8 +410,9 @@ func migrationRunner(migrationId, sasturl, sastuser, sastpass, querymapping stri
 
 		if err != nil {
 			logger.Errorf("Failed to export batch %d of %d", batch+1, len(projectBatches))
+			statuslogger.Errorf("Failed to export (%s)", err)
 		} else {
-
+			statuslogger.Infof("Completed export")
 			if len(warningMsgs) > 0 {
 				logger.Warnf("The following warnings happened during the export:\n" + strings.Join(warningMsgs, "\n"))
 			}
@@ -365,7 +426,7 @@ func migrationRunner(migrationId, sasturl, sastuser, sastpass, querymapping stri
 			if err != nil {
 				retryCounter := 1
 				retryDelay := 30
-				for retryCounter < 5 {
+				for retryCounter < 3 {
 					logger.Warningf("Import attempt %d/5 failed with error %v, waiting %d seconds to retry", retryCounter, err, retryDelay)
 
 					time.Sleep(time.Duration(retryDelay) * time.Second)
@@ -379,8 +440,10 @@ func migrationRunner(migrationId, sasturl, sastuser, sastpass, querymapping stri
 
 			if err != nil {
 				logger.Errorf("Failed importing batch %d of %d: %s", batch+1, len(projectBatches), err)
+				statuslogger.Errorf("Failed to import (%s)", err)
 			} else {
 				logger.Infof("Migration data import batch %d of %d finished with status: %v", batch+1, len(projectBatches), result)
+				statuslogger.Infof("Completed import")
 			}
 		}
 	}
@@ -388,7 +451,7 @@ func migrationRunner(migrationId, sasturl, sastuser, sastpass, querymapping stri
 	return nil
 }
 
-func execCxSastExporter(username, password, cxsast_url string, projectIds []int, queryMappingFilePath, migrationId string) (string, string, string, []string, []string, error) {
+func execCxSastExporter(username, password, cxsast_url string, projectIds []int, queryMappingFilePath, migrationId string, maxAge int) (string, string, string, []string, []string, error) {
 	var warnings = []string{}
 	var errors = []string{}
 	s, _ := json.Marshal(projectIds)
@@ -397,7 +460,7 @@ func execCxSastExporter(username, password, cxsast_url string, projectIds []int,
 	externalFolderPath := "c:/work/code/cxsast-branch-migration/bin"
 	// Create symlink so that the exporter can access the calculator from the current working directory
 	os.Symlink(externalFolderPath, filepath.Join(migrationId, "external"))
-	exporterCmd := exec.Command(exporterPath, "--user", username, "--pass", password, "--url", cxsast_url, "--project-id", commaSeparatedProjectIds, "--projects-active-since", "3650", "--export", "triage,projects", "--query-mapping", queryMappingFilePath, "--project-names", "project-map.json")
+	exporterCmd := exec.Command(exporterPath, "--user", username, "--pass", password, "--url", cxsast_url, "--project-id", commaSeparatedProjectIds, "--projects-active-since", fmt.Sprintf("%d", maxAge), "--export", "triage,projects", "--query-mapping", queryMappingFilePath, "--project-names", "project-map.json")
 	exporterCmd.Dir = migrationId // set working directory to have a unique output folder
 	exporterOut, _ := exporterCmd.StdoutPipe()
 	err := exporterCmd.Start()
@@ -476,4 +539,38 @@ func doImport(encryptionKeyPath, archivePath string, cx1client *Cx1ClientGo.Cx1C
 		return "", fmt.Errorf("migration failed during execution")
 	}
 	return result, nil
+}
+
+func AssignProjectsByName(cx1client *Cx1ClientGo.Cx1Client, projectNames *[]string, ApplicationName string, logger *logrus.Logger) {
+	app, err := cx1client.GetApplicationByName(ApplicationName)
+	if err != nil {
+		logger.Errorf("failed to get target application %v: %s", ApplicationName, err)
+		return
+	}
+
+	for _, name := range *projectNames {
+		app.AddRule("project.name.in", name)
+
+		if err = cx1client.UpdateApplication(&app); err != nil {
+			logger.Errorf("Failed to add project %v to application %v: %s", name, app.String(), err)
+		} else {
+			logger.Infof("Added project %v to application %v", name, app.String())
+		}
+	}
+}
+
+func AddProjectTags(cx1client *Cx1ClientGo.Cx1Client, projectNames *[]string, ApplicationName string, logger *logrus.Logger) {
+	appstr := fmt.Sprintf("App:%v", ApplicationName)
+	for _, name := range *projectNames {
+		proj, err := cx1client.GetProjectByName(name)
+		if err != nil {
+			logger.Errorf("Failed to get project %v from CheckmarxOne", name)
+		}
+
+		proj.Tags[appstr] = ""
+		err = cx1client.UpdateProject(&proj)
+		if err != nil {
+			logger.Errorf("Failed to add tag to project %v", proj.String())
+		}
+	}
 }

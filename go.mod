@@ -5,7 +5,7 @@ go 1.21.6
 require (
 	github.com/containerd/log v0.1.0
 	github.com/cxpsemea/Cx1ClientGo v0.0.63
-	github.com/cxpsemea/CxSASTClientGo v0.0.18
+	github.com/cxpsemea/CxSASTClientGo v0.0.20
 	github.com/google/uuid v1.6.0
 	github.com/pkg/errors v0.9.1
 	github.com/sirupsen/logrus v1.9.3
