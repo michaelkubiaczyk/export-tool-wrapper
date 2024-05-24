@@ -411,7 +411,7 @@ func migrationRunner(migrationId, sasturl, sastuser, sastpass, querymapping stri
 			retryCounter := 1
 			retryDelay := 30
 			for retryCounter < 3 {
-				logger.Warningf("Export attempt %d/5 failed with error %v, waiting %d seconds to retry", retryCounter, err, retryDelay)
+				logger.Warningf("Export attempt %d/3 failed with error %v, waiting %d seconds to retry", retryCounter, err, retryDelay)
 
 				time.Sleep(time.Duration(retryDelay) * time.Second)
 				archiveName, encryptionKeyFilename, _, warningMsgs, errorMsgs, err = execCxSastExporter(username, password, cxsast_url, projectBatches[batch], queryMappingFilePath, migrationId, maxAge)
@@ -441,7 +441,7 @@ func migrationRunner(migrationId, sasturl, sastuser, sastpass, querymapping stri
 				retryCounter := 1
 				retryDelay := 30
 				for retryCounter < 3 {
-					logger.Warningf("Import attempt %d/5 failed with error %v, waiting %d seconds to retry", retryCounter, err, retryDelay)
+					logger.Warningf("Import attempt %d/3 failed with error %v, waiting %d seconds to retry", retryCounter, err, retryDelay)
 
 					time.Sleep(time.Duration(retryDelay) * time.Second)
 					result, err = doImport(encryptionKeyPath, archivePath, cx1client, logger)
