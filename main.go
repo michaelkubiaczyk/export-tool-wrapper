@@ -331,7 +331,7 @@ func main() {
 	if len(pmap) > 0 {
 		logger.Infof("There are %d projects in scope", len(pmap))
 
-		for group := range pmap {
+		for group := 0; group < len(pmap); group++ {
 			migrationId := uuid.New()
 			migrationFolder := fmt.Sprintf("migration-%v", migrationId.String())
 			statuslogger.Infof("Project Group %d of %d (sub-folder: %v):", group+1, len(pmap), migrationFolder)
@@ -399,6 +399,9 @@ func migrationRunner(migrationId, sasturl, sastuser, sastpass, querymapping stri
 			log.DebugLevel,
 		},
 	})
+	defer func(logger *logrus.Logger) {
+		logger.Hooks = make(logrus.LevelHooks)
+	}(logger)
 
 	//projectIds := []string{}
 	projectMappingByName := make(map[string][]int)
