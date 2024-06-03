@@ -309,11 +309,12 @@ func main() {
 
 	sort.Slice(projectNames, func(i, j int) bool { return len(branchCount[projectNames[i]]) > len(branchCount[projectNames[j]]) })
 	logger.Infof("Splitting projects into groups of max %d size", *GroupSize)
+	totalCount := 0
 	for _, name := range projectNames {
 		logger.Infof("Group %d - %v with %d branches", currentGroup+1, name, len(branchCount[name]))
 
 		if len(branchCount[name]) > 0 {
-
+			totalCount += len(branchCount[name])
 			for _, pindex := range branchCount[name] {
 				pmap[currentGroup][int(projects[pindex].ProjectID)] = name
 
@@ -328,9 +329,9 @@ func main() {
 		}
 	}
 
-	if len(pmap) > 0 {
-		logger.Infof("There are %d projects in scope", len(pmap))
+	logger.Infof("There are %d projects in scope", totalCount)
 
+	if len(pmap) > 0 {
 		for group := 0; group < len(pmap); group++ {
 			migrationId := uuid.New()
 			migrationFolder := fmt.Sprintf("migration-%v", migrationId.String())
@@ -644,7 +645,7 @@ func AssignProjectsByName(cx1client *Cx1ClientGo.Cx1Client, projectNames *[]stri
 }
 
 func AddProjectTags(cx1client *Cx1ClientGo.Cx1Client, projectNames *[]string, ApplicationName string, logger *logrus.Logger) {
-	appstr := fmt.Sprintf("App:%v", ApplicationName)
+	appstr := fmt.Sprintf("App_%v", ApplicationName)
 	for _, name := range *projectNames {
 		proj, err := cx1client.GetProjectByName(name)
 		if err != nil {
