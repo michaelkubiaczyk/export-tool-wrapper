@@ -5,3 +5,4 @@ bin/**
 migration*
 migration*/**
 *cache.json
+*.exe
