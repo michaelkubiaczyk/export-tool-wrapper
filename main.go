@@ -287,7 +287,6 @@ func main() {
 			re := regexp.MustCompile("(?i)" + name)
 
 			logger.Infof("Checking projects matching '%v'", name)
-			branchCount[name] = make([]int, 0)
 
 			for index, p := range projects {
 				if re.MatchString(p.Name) {
@@ -303,6 +302,9 @@ func main() {
 							UpdateProjectStatus(sastclient, logger, &p, "Skipped: Last scan on an old CxSAST version")
 						} else {
 							logger.Infof(" + %v in scope", p.String())
+							if _, ok := branchCount[name]; !ok {
+								branchCount[name] = make([]int, 0)
+							}
 							branchCount[name] = append(branchCount[name], index)
 						}
 					} else {
@@ -413,8 +415,22 @@ func main() {
 			},
 		})
 
-		AssignProjectsByName(cx1client, &projectNames, *ApplicationName, logger)
-		AddProjectTags(cx1client, &projectNames, *ApplicationName, logger)
+		appTag := fmt.Sprintf("App_%v", *ApplicationName)
+		app, err := cx1client.GetApplicationByName(*ApplicationName)
+		if err != nil {
+			logger.Errorf("failed to get target application %v: %s", *ApplicationName, err)
+		} else {
+			AssignProjectsByName(cx1client, &projectNames, &app, logger)
+
+			app.AddRule("project.tag.key.exists", appTag)
+			if err := cx1client.UpdateApplication(&app); err != nil {
+				logger.Errorf("Failed to add project-tag %v to application %v: %s", appTag, app.String(), err)
+			} else {
+				logger.Infof("Added project-tag %v to application %v", appTag, app.String())
+			}
+		}
+
+		AddProjectTags(cx1client, &projectNames, appTag, logger)
 
 		logger.Hooks = make(logrus.LevelHooks, 0)
 	}
@@ -552,7 +568,8 @@ func migrationRunner(migrationId, sasturl, sastuser, sastpass, querymapping stri
 			archivePath := filepath.FromSlash(migrationId + "/" + archiveName)
 			encryptionKeyPath := filepath.FromSlash(migrationId + "/" + encryptionKeyFilename)
 
-			result, err := doImport(encryptionKeyPath, archivePath, cx1client, logger)
+			var result string
+			result, err = doImport(encryptionKeyPath, archivePath, cx1client, logger)
 			if err != nil {
 				retryCounter := 1
 				retryDelay := 30
@@ -681,17 +698,11 @@ func doImport(encryptionKeyPath, archivePath string, cx1client *Cx1ClientGo.Cx1C
 	return result, nil
 }
 
-func AssignProjectsByName(cx1client *Cx1ClientGo.Cx1Client, projectNames *[]string, ApplicationName string, logger *logrus.Logger) {
-	app, err := cx1client.GetApplicationByName(ApplicationName)
-	if err != nil {
-		logger.Errorf("failed to get target application %v: %s", ApplicationName, err)
-		return
-	}
-
+func AssignProjectsByName(cx1client *Cx1ClientGo.Cx1Client, projectNames *[]string, app *Cx1ClientGo.Application, logger *logrus.Logger) {
 	for _, name := range *projectNames {
 		app.AddRule("project.name.in", name)
 
-		if err = cx1client.UpdateApplication(&app); err != nil {
+		if err := cx1client.UpdateApplication(app); err != nil {
 			logger.Errorf("Failed to add project %v to application %v: %s", name, app.String(), err)
 		} else {
 			logger.Infof("Added project %v to application %v", name, app.String())
@@ -699,14 +710,14 @@ func AssignProjectsByName(cx1client *Cx1ClientGo.Cx1Client, projectNames *[]stri
 	}
 }
 
-func AddProjectTags(cx1client *Cx1ClientGo.Cx1Client, projectNames *[]string, ApplicationName string, logger *logrus.Logger) {
-	appstr := fmt.Sprintf("App_%v", ApplicationName)
+func AddProjectTags(cx1client *Cx1ClientGo.Cx1Client, projectNames *[]string, appTag string, logger *logrus.Logger) {
+
 	for _, name := range *projectNames {
 		proj, err := cx1client.GetProjectByName(name)
 		if err != nil {
 			logger.Errorf("Failed to get project %v from CheckmarxOne", name)
 		} else {
-			proj.Tags[appstr] = ""
+			proj.Tags[appTag] = ""
 			err = cx1client.UpdateProject(&proj)
 			if err != nil {
 				logger.Errorf("Failed to add tag to project %v", proj.String())
