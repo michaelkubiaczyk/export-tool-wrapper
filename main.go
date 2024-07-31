@@ -377,11 +377,14 @@ func main() {
 	}
 
 	logger.Infof("There are %d projects in scope", totalCount)
+	processedCount := 0
 
 	if len(pmap) > 0 {
 		for group := 0; group < len(pmap); group++ {
 			migrationId := uuid.New()
 			migrationFolder := fmt.Sprintf("migration-%v", migrationId.String())
+
+			processedCount += len(pmap[group])
 			statuslogger.Infof("Project Group %d of %d (sub-folder: %v):", group+1, len(pmap), migrationFolder)
 
 			err = migrationRunner(migrationFolder, *SASTUrl, *SASTUser, *SASTPass, *QueryMap, cx1client, pmap[group], *ScanMaxAge, logger)
@@ -399,6 +402,8 @@ func main() {
 					}
 				}
 			}
+
+			logger.Infof("Current progress: %d out of %d projects processed", processedCount, totalCount)
 		}
 	}
 
